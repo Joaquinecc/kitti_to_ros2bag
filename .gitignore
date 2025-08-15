@@ -1,0 +1,93 @@
+# ROS 2 Colcon Workspace Ignored Files
+# ====================================
+
+# Colcon build directories
+build/
+install/
+log/
+
+# Python temporary files and environments
+*.pyc
+*.pyd
+*.pyo
+__pycache__/
+.Python
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+.tox/
+.mypy_cache/
+.pytest_cache/
+.vscode/pylint/ # VSCode Pylint cache
+
+# C++ specific temporary files
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+*.out
+*.lo
+*.la
+*.dlo
+*.in
+*.cmake
+CMakeFiles/
+CMakeCache.txt
+CPPLint/ # If you use custom cpplint setup
+
+# Editor and OS specific files
+.DS_Store # macOS
+.vscode/  # VSCode workspace settings (consider if you want to share specific settings)
+.idea/    # IntelliJ/PyCharm
+*.swp
+*.swo   # Vim swap files
+*~      # Emacs backup files
+.#* # Emacs lock files
+*.bak   # Backup files
+*.orig
+*.rej
+*.log # General log files (colcon logs are covered by log/ directory)
+.directory # KDE directory settings
+.project # Eclipse
+.cproject # Eclipse
+
+# Rosbag files
+*.bag
+*.db # For rosbag2 sqlite3 storage
+*.mcap # For rosbag2 mcap storage
+# If you have a specific bag output directory, you might ignore that:
+# output_bags/
+
+# Dependency manager files (if you use things like vcpkg, Conan, etc. inside packages)
+# vcpkg/
+# conanfile.lock
+
+# Documentation generation (e.g., Doxygen)
+html/
+latex/
+docs/html/
+
+# Test results
+# Depending on how you run tests, you might have generated test reports
+# test_results/
+# .coverage
+
+# Catkin/ROS 1 specific (just in case)
+devel/
+# For ROS 1, you'd also ignore:
+# .catkin_workspace
+# build_isolated/
+# install_isolated/
+
+# Custom files you might want to ignore (add as needed)
+# my_secret_data.txt
+# .env.local
+
+config/kitti_config.yaml
+
+note.txt
