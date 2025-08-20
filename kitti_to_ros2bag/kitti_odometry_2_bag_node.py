@@ -5,8 +5,9 @@ import numpy as np
 import cv2
 import rosbag2_py
 import os
+from typing import List, Optional, Union, Tuple
 from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2, PointField,Imu,Image, CameraInfo
+from sensor_msgs.msg import PointCloud2, PointField, Imu, Image, CameraInfo
 from std_msgs.msg import Header # We need Header for PointCloud2 message
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry, Path
@@ -29,12 +30,40 @@ VELO_TOPIC_NAME='/kitti/velo/pointcloud'
 IMU_TOPIC_NAME='/kitti/oxts/imu'
 ODOM_TOPIC_NAME='/kitti/gtruth/odom'
 PATH_TOPIC_NAME='/kitti/gtruth/path'
-class KittiOdom2Bag(Node):
-    def __init__(self):
-        """
-        Initializes the KittiOdom2Bag node.
 
-        This sets up parameters, dataset loading, bag writer, topic creation, and TF transforms.
+class KittiOdom2Bag(Node):
+    """
+    ROS 2 node for converting KITTI odometry dataset to ROS 2 bag format.
+    
+    This class handles loading KITTI odometry data, processing sensor information
+    including LiDAR point clouds, IMU data, and ground truth odometry, then
+    writes all data to a ROS 2 bag file with proper timestamps and transforms.
+    
+    Attributes
+    ----------
+    kitti_dataset : KITTIOdometryDataset
+        Handler for KITTI odometry dataset access.
+    bridge : CvBridge
+        OpenCV-ROS image bridge for image conversions.
+    counter : int
+        Current frame counter for processing.
+    counter_limit : int
+        Total number of frames to process.
+    writer : rosbag2_py.SequentialWriter
+        ROS 2 bag writer for output.
+    kitti_raw : Optional[pykitti.raw]
+        Raw KITTI data handler for IMU information.
+    p_msg : Path
+        Accumulated path message for trajectory visualization.
+    """
+
+    def __init__(self) -> None:
+        """
+        Initialize the KittiOdom2Bag node.
+
+        Sets up parameters, loads KITTI dataset, initializes bag writer, 
+        creates topics, and publishes static transforms. Handles both 
+        odometry and raw KITTI data depending on configuration.
         
         Parameters
         ----------
@@ -43,6 +72,13 @@ class KittiOdom2Bag(Node):
         Returns
         -------
         None
+        
+        Raises
+        ------
+        FileNotFoundError
+            If ground truth odometry file is not found.
+        Exception
+            If KITTI raw data cannot be loaded.
         """
         super().__init__("KittiOdom2Bag")
 
@@ -134,12 +170,18 @@ class KittiOdom2Bag(Node):
         self.publish_tf_static()    
    
 
-    def create_topics(self):
+    def create_topics(self) -> None:
         """
-        Creates ROS 2 topics for publishing KITTI data.
+        Create ROS 2 topics for publishing KITTI data to bag file.
 
+        Creates topic metadata for odometry, path, Velodyne point clouds,
+        TF transforms, and optionally IMU data depending on raw data availability.
         Topics include grayscale stereo images, camera info, odometry, path, 
         Velodyne point clouds, and TF frames.
+
+        Parameters
+        ----------
+        None
 
         Returns
         -------
@@ -172,18 +214,35 @@ class KittiOdom2Bag(Node):
 
         
         
-    def process_all_frames(self):
+    def process_all_frames(self) -> None:
         """
-        Iterates through all dataset frames and publishes sensor data.
+        Process all frames in the KITTI dataset and write to bag file.
+
+        Iterates through all dataset frames sequentially, reading timestamps,
+        publishing sensor data (images, odometry, point clouds, IMU), and 
+        recording all messages to the rosbag. Handles both raw and odometry
+        data depending on configuration.
 
         For each frame:
-        - Reads timestamp
-        - Publishes images, odometry, point clouds, and TFs (if enabled)
+        - Reads timestamp from times file
+        - Publishes ground truth odometry and path (if available)
+        - Publishes dynamic TF transforms
+        - Publishes IMU data (if raw data available)
+        - Publishes Velodyne point clouds
         - Records all messages to the rosbag
+
+        Parameters
+        ----------
+        None
 
         Returns
         -------
         None
+        
+        Examples
+        --------
+        >>> node = KittiOdom2Bag()
+        >>> node.process_all_frames()  # Processes all frames and writes to bag
         """
 
         for counter in range(self.counter_limit):
@@ -208,20 +267,30 @@ class KittiOdom2Bag(Node):
         self.writer.close() # Close the bag writer when done
 
         return 
-    def publish_camera(self, timestamp_ns: int, counter: int):
+        
+    def publish_camera(self, timestamp_ns: int, counter: int) -> None:
         """
-        Publishes left and right grayscale images and their camera info.
+        Publish left and right grayscale images and their camera calibration info.
+
+        Reads stereo image pairs from the KITTI dataset, converts them to ROS
+        Image messages, and writes them to the bag file along with camera
+        calibration information derived from projection matrices.
 
         Parameters
         ----------
         timestamp_ns : int
             Timestamp in nanoseconds for the current frame.
         counter : int
-            Index of the frame to publish.
+            Frame index to publish, used to access specific image files.
 
         Returns
         -------
         None
+        
+        Examples
+        --------
+        >>> node = KittiOdom2Bag()
+        >>> node.publish_camera(1234567890, 42)  # Publish frame 42 at given timestamp
         """
         # retrieving images and writing to bag
         left_image = cv2.imread(self.left_imgs[counter])
@@ -237,11 +306,24 @@ class KittiOdom2Bag(Node):
         p_mtx3 = self.kitti_dataset.projection_matrix(2)
         self.publish_camera_info(p_mtx3, '/kitti/camera_gray_right/camera_info', timestamp_ns)
 
-    def publish_tf_static(self):
+    def publish_tf_static(self) -> None:
         """
-        Publishes static TF transforms between base_link, odom, and velo_link frames.
+        Publish static TF transforms between coordinate frames.
 
-        These transforms are invariant throughout the dataset.
+        Creates and publishes time-invariant transforms between base_link, 
+        odom, velo_link, and camera frames. Includes a 90-degree rotation
+        on the X-axis for visualization compatibility and KITTI-specific
+        calibration transforms.
+
+        The static transforms include:
+        - map to odom (with 90° X rotation for visualization)
+        - base_link to camera_gray_left (identity)
+        - base_link to velo_link (from KITTI calibration)
+        - base_link to imu_link (if raw data available)
+
+        Parameters
+        ----------
+        None
 
         Returns
         -------
@@ -298,20 +380,37 @@ class KittiOdom2Bag(Node):
             
         self.writer.write('/tf_static', serialize_message(tfm_static),  current_ros_time.nanoseconds)
 
-    def publish_imu_data(self, topic: str, timestamp_ns: int, counter: int):
+    def publish_imu_data(self, topic: str, timestamp_ns: int, counter: int) -> None:
         """
-        Publishes IMU data from the OXTS packet.
+        Publish IMU data from KITTI OXTS measurements.
+
+        Extracts inertial measurement data from KITTI raw dataset's OXTS
+        system and converts it to ROS IMU message format. Includes linear
+        acceleration, angular velocity, and orientation from OXTS packet.
 
         Parameters
         ----------
-        oxts : pykitti.raw.oxts.OxtsData
-            The OXTS data packet containing IMU readings.
-        current_time : datetime
-            The current timestamp of the data.
+        topic : str
+            Name of the ROS topic to publish IMU data to.
+        timestamp_ns : int
+            Timestamp in nanoseconds for the current frame.
+        counter : int
+            Frame index to access corresponding OXTS data.
 
         Returns
         -------
         None
+        
+        Notes
+        -----
+        Returns early if counter exceeds available OXTS data length.
+        Covariance matrices are set to unknown (-1.0) as KITTI doesn't
+        provide uncertainty estimates.
+        
+        Examples
+        --------
+        >>> node = KittiOdom2Bag()
+        >>> node.publish_imu_data('/kitti/oxts/imu', 1234567890, 42)
         """
         if counter>= len(self.kitti_raw.oxts):
             return 
@@ -343,22 +442,37 @@ class KittiOdom2Bag(Node):
         imu_msg.orientation_covariance[0] = -1.0
         self.writer.write(topic, serialize_message(imu_msg), timestamp_ns)
 
-    def publish_velo(self, topic: str, timestamp_ns: int, counter: int):
+    def publish_velo(self, topic: str, timestamp_ns: int, counter: int) -> None:
         """
-        Publishes Velodyne LiDAR point cloud to the specified topic.
+        Publish Velodyne LiDAR point cloud to specified topic.
+
+        Reads binary Velodyne point cloud data from KITTI dataset, converts
+        it to ROS PointCloud2 message format with XYZI fields, and writes
+        to the bag file. Each point contains 3D coordinates and intensity.
 
         Parameters
         ----------
         topic : str
-            Name of the topic to publish point cloud data.
+            Name of the ROS topic to publish point cloud data to.
         timestamp_ns : int
-            Timestamp in nanoseconds for the frame.
+            Timestamp in nanoseconds for the current frame.
         counter : int
-            Index of the point cloud frame.
+            Frame index to access corresponding Velodyne file.
 
         Returns
         -------
         None
+        
+        Notes
+        -----
+        Point cloud data is expected in binary format with 4 floats per point
+        (x, y, z, intensity). Sets frame_id to 'velo_link' for proper TF
+        transform chain.
+        
+        Examples
+        --------
+        >>> node = KittiOdom2Bag()
+        >>> node.publish_velo('/kitti/velo/pointcloud', 1234567890, 42)
         """
         velo_filename=self.velodynes_file[counter]
         frame_id="velo_link"
@@ -396,43 +510,67 @@ class KittiOdom2Bag(Node):
         self.writer.write(topic, serialize_message(msg), timestamp_ns)
         self.get_logger().debug(f"Wrote Velodyne point cloud for frame {counter}")
 
-    def publish_camera_info(self, mtx: np.ndarray, topic: str, timestamp: int):
+    def publish_camera_info(self, mtx: np.ndarray, topic: str, timestamp: int) -> None:
         """
-        Publishes CameraInfo messages using projection matrix from KITTI dataset.
+        Publish camera calibration information using projection matrix.
+
+        Creates and publishes CameraInfo messages containing camera calibration
+        data derived from KITTI's 3x4 projection matrices. The projection matrix
+        is flattened and stored in the message's P field.
 
         Parameters
         ----------
         mtx : np.ndarray
-            3x4 projection matrix of the camera.
+            3x4 projection matrix from KITTI calibration data.
         topic : str
-            Topic name for CameraInfo messages.
+            ROS topic name for publishing CameraInfo messages.
         timestamp : int
-            Timestamp in nanoseconds.
+            Timestamp in nanoseconds for the message.
 
         Returns
         -------
         None
+        
+        Examples
+        --------
+        >>> import numpy as np
+        >>> node = KittiOdom2Bag()
+        >>> proj_matrix = np.eye(3, 4)  # Example 3x4 projection matrix
+        >>> node.publish_camera_info(proj_matrix, '/camera_info', 1234567890)
         """
         camera_info_msg_2 = CameraInfo()
         camera_info_msg_2.p = mtx.flatten()
         self.writer.write(topic, serialize_message(camera_info_msg_2), timestamp)   
         return
-    def publish_dynamic_tf(self, translation: np.ndarray, quaternion: np.ndarray, timestamp_ns: int):
+        
+    def publish_dynamic_tf(self, translation: np.ndarray, quaternion: np.ndarray, timestamp_ns: int) -> None:
         """
-        Publishes a dynamic transform from the map to base_link frame.
+        Publish dynamic transform from odom to base_link frame.
+
+        Creates and publishes time-varying TF transform representing the
+        vehicle's pose in the odometry frame. This transform updates with
+        each frame to reflect the vehicle's motion through the environment.
 
         Parameters
         ----------
         translation : np.ndarray
-            3-element array with XYZ position.
+            3-element array containing XYZ position coordinates in meters.
         quaternion : np.ndarray
-            4-element array with quaternion [x, y, z, w].
+            4-element array with orientation quaternion in [x, y, z, w] format.
         timestamp_ns : int
-            Timestamp in nanoseconds.
+            Timestamp in nanoseconds for the transform.
 
         Returns
         -------
         None
+        
+        Examples
+        --------
+        >>> import numpy as np
+        >>> node = KittiOdom2Bag()
+        >>> pos = np.array([1.0, 2.0, 0.0])
+        >>> quat = np.array([0.0, 0.0, 0.0, 1.0])  # Identity rotation
+        >>> node.publish_dynamic_tf(pos, quat, 1234567890)
         """
         t_dynamic = TransformStamped()
         t_dynamic.header.stamp.sec = timestamp_ns // 1_000_000_000
@@ -453,22 +591,39 @@ class KittiOdom2Bag(Node):
         self.writer.write('/tf', serialize_message(tf_oxts_msg), timestamp_ns)
 
 
-    def publish_odom(self, translation: np.ndarray, quaternion: np.ndarray, timestamp_ns: int):
+    def publish_odom(self, translation: np.ndarray, quaternion: np.ndarray, timestamp_ns: int) -> None:
         """
-        Publishes Odometry and Path messages from ground truth.
+        Publish ground truth odometry and update path trajectory.
+
+        Creates Odometry message from ground truth pose data and publishes
+        it to the odometry topic. Also updates the accumulated path message
+        by calling publish_path with the current odometry data.
 
         Parameters
         ----------
         translation : np.ndarray
-            3-element array representing XYZ position.
+            3-element array representing XYZ position in meters.
         quaternion : np.ndarray
-            4-element array with orientation in quaternion format [x, y, z, w].
+            4-element array with orientation quaternion in [x, y, z, w] format.
         timestamp_ns : int
-            Timestamp in nanoseconds.
+            Timestamp in nanoseconds for the odometry message.
 
         Returns
         -------
         None
+        
+        Notes
+        -----
+        Sets child_frame_id to 'camera_gray_left' as the reference frame
+        for odometry measurements, with parent frame 'odom'.
+        
+        Examples
+        --------
+        >>> import numpy as np
+        >>> node = KittiOdom2Bag()
+        >>> pos = np.array([1.0, 2.0, 0.0])
+        >>> quat = np.array([0.0, 0.0, 0.0, 1.0])  # Identity rotation
+        >>> node.publish_odom(pos, quat, 1234567890)
         """
         odom_msg = Odometry()
         odom_msg.header.frame_id = "odom" 
@@ -487,20 +642,37 @@ class KittiOdom2Bag(Node):
         self.publish_path(odom_msg, timestamp_ns)
         return
 
-    def publish_path(self, odom_msg: Odometry, timestamp_ns: int):
+    def publish_path(self, odom_msg: Odometry, timestamp_ns: int) -> None:
         """
-        Records a PoseStamped message from an Odometry message to a Path.
+        Add current pose to path trajectory and publish updated path.
+
+        Extracts pose information from an Odometry message, creates a
+        PoseStamped message, appends it to the accumulated path, and
+        publishes the complete trajectory for visualization.
 
         Parameters
         ----------
         odom_msg : nav_msgs.msg.Odometry
-            Odometry message used to extract position and orientation.
+            Odometry message containing current pose information.
         timestamp_ns : int
-            Timestamp in nanoseconds.
+            Timestamp in nanoseconds for the path message.
 
         Returns
         -------
         None
+        
+        Notes
+        -----
+        The path accumulates all poses throughout the dataset processing,
+        creating a complete trajectory visualization in the 'odom' frame.
+        
+        Examples
+        --------
+        >>> from nav_msgs.msg import Odometry
+        >>> node = KittiOdom2Bag()
+        >>> odom = Odometry()
+        >>> # ... populate odom message ...
+        >>> node.publish_path(odom, 1234567890)
         """
 
         #GT pose
@@ -512,7 +684,27 @@ class KittiOdom2Bag(Node):
         self.writer.write(PATH_TOPIC_NAME, serialize_message(self.p_msg), timestamp_ns)
         return
 
-def main(args=None):
+def main(args: Optional[List[str]] = None) -> None:
+    """
+    Main entry point for the KITTI to ROS 2 bag conversion node.
+    
+    Initializes ROS 2, creates the KittiOdom2Bag node, processes all frames,
+    and handles shutdown gracefully with proper cleanup.
+
+    Parameters
+    ----------
+    args : Optional[List[str]], default=None
+        Command line arguments to pass to rclpy.init().
+
+    Returns
+    -------
+    None
+    
+    Examples
+    --------
+    >>> main()  # Run with default arguments
+    >>> main(['--ros-args', '--log-level', 'debug'])  # Run with log level
+    """
     rclpy.init(args=args)
     node = KittiOdom2Bag()
     try:
