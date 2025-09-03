@@ -7,7 +7,7 @@ import rosbag2_py
 import os
 from typing import List, Optional, Union, Tuple
 from rclpy.node import Node
-from sensor_msgs.msg import PointCloud2, PointField, Imu, Image, CameraInfo
+from sensor_msgs.msg import PointCloud2, PointField, Imu, Image, CameraInfo, NavSatFix, NavSatStatus
 from std_msgs.msg import Header # We need Header for PointCloud2 message
 from cv_bridge import CvBridge
 from nav_msgs.msg import Odometry, Path
@@ -30,6 +30,7 @@ VELO_TOPIC_NAME='/kitti/velo/pointcloud'
 IMU_TOPIC_NAME='/kitti/oxts/imu'
 ODOM_TOPIC_NAME='/kitti/gtruth/odom'
 PATH_TOPIC_NAME='/kitti/gtruth/path'
+GPS_TOPIC_NAME='/kitti/oxts/gps'
 
 class KittiOdom2Bag(Node):
     """
@@ -198,6 +199,7 @@ class KittiOdom2Bag(Node):
         tf_static_topic_info = rosbag2_py._storage.TopicMetadata(id=518,name='/tf_static', type='tf2_msgs/msg/TFMessage', serialization_format='cdr')
         tf_topic_info = rosbag2_py._storage.TopicMetadata(id=517,name='/tf', type='tf2_msgs/msg/TFMessage', serialization_format='cdr')
         imu_topic= rosbag2_py._storage.TopicMetadata(id=519,name=IMU_TOPIC_NAME,type='sensor_msgs/msg/Imu',serialization_format='cdr',)
+        gps_topic_info = rosbag2_py._storage.TopicMetadata(id=520,name=GPS_TOPIC_NAME,type='sensor_msgs/msg/NavSatFix',serialization_format='cdr',)
 
         # self.writer.create_topic(left_img_topic_info)
         # self.writer.create_topic(right_img_topic_info)
@@ -211,6 +213,7 @@ class KittiOdom2Bag(Node):
         self.writer.create_topic(tf_static_topic_info) 
         if self.kitti_raw is not None:
             self.writer.create_topic(imu_topic)
+            self.writer.create_topic(gps_topic_info)
 
         
         
@@ -258,6 +261,7 @@ class KittiOdom2Bag(Node):
                 self.publish_dynamic_tf(translation, quaternion, timestamp_ns)
             if self.kitti_raw is not None:
                 self.publish_imu_data(IMU_TOPIC_NAME,timestamp_ns,counter)
+                self.publish_gps_data(GPS_TOPIC_NAME, timestamp_ns, counter)
             
             #point cloud
             self.publish_velo(VELO_TOPIC_NAME,timestamp_ns,counter)
@@ -441,6 +445,37 @@ class KittiOdom2Bag(Node):
         imu_msg.angular_velocity_covariance[0] = -1.0
         imu_msg.orientation_covariance[0] = -1.0
         self.writer.write(topic, serialize_message(imu_msg), timestamp_ns)
+
+    def publish_gps_data(self, topic: str, timestamp_ns: int, counter: int) -> None:
+        """
+        Publish GPS data from KITTI OXTS measurements as NavSatFix.
+
+        Parameters
+        ----------
+        topic : str
+            Name of the ROS topic to publish GPS data to.
+        timestamp_ns : int
+            Timestamp in nanoseconds for the current frame.
+        counter : int
+            Frame index to access corresponding OXTS data.
+        """
+        if counter >= len(self.kitti_raw.oxts):
+            return
+        oxts = self.kitti_raw.oxts[counter]
+
+        gps_msg = NavSatFix()
+        gps_msg.header = Header()
+        gps_msg.header.frame_id = 'imu_link'
+        gps_msg.header.stamp.sec = timestamp_ns // 1_000_000_000
+        gps_msg.header.stamp.nanosec = timestamp_ns % 1_000_000_000
+        gps_msg.status.status = NavSatStatus.STATUS_FIX
+        gps_msg.status.service = NavSatStatus.SERVICE_GPS
+        gps_msg.latitude = float(oxts.packet.lat)
+        gps_msg.longitude = float(oxts.packet.lon)
+        gps_msg.altitude = float(oxts.packet.alt)
+        gps_msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_UNKNOWN
+
+        self.writer.write(topic, serialize_message(gps_msg), timestamp_ns)
 
     def publish_velo(self, topic: str, timestamp_ns: int, counter: int) -> None:
         """
