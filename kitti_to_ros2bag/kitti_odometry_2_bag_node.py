@@ -193,13 +193,20 @@ class KittiOdom2Bag(Node):
         # left_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=514,name='/kitti/camera_gray_left/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr')
         # right_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=515,name='/kitti/camera_gray_right/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr')
 
+        qos_tf_static = rosbag2_py._storage.QoS(1).keep_last(1).reliable().transient_local()
+        
         odom_topic_info = rosbag2_py._storage.TopicMetadata(id=512,name=ODOM_TOPIC_NAME, type='nav_msgs/msg/Odometry', serialization_format='cdr')
         path_topic_info = rosbag2_py._storage.TopicMetadata(id=513,name=PATH_TOPIC_NAME, type='nav_msgs/msg/Path', serialization_format='cdr')
         velodyne_topic_info = rosbag2_py._storage.TopicMetadata(id=516,name=VELO_TOPIC_NAME, type='sensor_msgs/msg/PointCloud2', serialization_format='cdr')
-        tf_static_topic_info = rosbag2_py._storage.TopicMetadata(id=518,name='/tf_static', type='tf2_msgs/msg/TFMessage', serialization_format='cdr')
-        tf_topic_info = rosbag2_py._storage.TopicMetadata(id=517,name='/tf', type='tf2_msgs/msg/TFMessage', serialization_format='cdr')
         imu_topic= rosbag2_py._storage.TopicMetadata(id=519,name=IMU_TOPIC_NAME,type='sensor_msgs/msg/Imu',serialization_format='cdr',)
         gps_topic_info = rosbag2_py._storage.TopicMetadata(id=520,name=GPS_TOPIC_NAME,type='sensor_msgs/msg/NavSatFix',serialization_format='cdr',)
+
+        tf_static_topic_info = rosbag2_py._storage.TopicMetadata(id=518,name='/tf_static', type='tf2_msgs/msg/TFMessage', 
+        serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+        tf_topic_info = rosbag2_py._storage.TopicMetadata(id=517,name='/tf', type='tf2_msgs/msg/TFMessage', serialization_format='cdr',)
+
+
+
 
         # self.writer.create_topic(left_img_topic_info)
         # self.writer.create_topic(right_img_topic_info)
