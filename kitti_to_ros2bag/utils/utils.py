@@ -2,6 +2,20 @@ import math
 import numpy as np
 from typing import List, Union, Optional
 
+
+sequence_to_raw = {
+    0:  { 'date': '2011_10_03', 'drive': '0027', 'start': 0,    'end': 4540 },
+    1:  { 'date': '2011_10_03', 'drive': '0042', 'start': 0,    'end': 1100 },
+    2:  { 'date': '2011_10_03', 'drive': '0034', 'start': 0,    'end': 4660 },
+    3:  { 'date': '2011_09_26', 'drive': '0067', 'start': 0,    'end': 800  },
+    4:  { 'date': '2011_09_30', 'drive': '0016', 'start': 0,    'end': 270  },
+    5:  { 'date': '2011_09_30', 'drive': '0018', 'start': 0,    'end': 2760 },
+    6:  { 'date': '2011_09_30', 'drive': '0020', 'start': 0,    'end': 1100 },
+    7:  { 'date': '2011_09_30', 'drive': '0027', 'start': 0,    'end': 1100 },
+    8:  { 'date': '2011_09_30', 'drive': '0028', 'start': 1100, 'end': 5170 },
+    9:  { 'date': '2011_09_30', 'drive': '0033', 'start': 0,    'end': 1590 },
+    10: { 'date': '2011_09_30', 'drive': '0034', 'start': 0,    'end': 1200 },
+}
 def quaternion_from_euler(roll: float, pitch: float, yaw: float) -> List[float]:
     """
     Converts Euler angles (roll, pitch, yaw) to a quaternion.

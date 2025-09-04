@@ -18,7 +18,7 @@ from cv_bridge import CvBridge
 from rclpy.serialization import serialize_message
 from tf2_ros import TransformBroadcaster # ADDED: Import TransformBroadcaster
 from tf2_msgs.msg import TFMessage # ADDED: Needed for /tf topic
-from kitti_to_ros2bag.utils.utils import quaternion_from_matrix
+from kitti_to_ros2bag.utils.utils import quaternion_from_matrix, sequence_to_raw
 # ,quaternion_from_euler
 from rclpy.time import Time as RospyTime # Import rclpy.time.Time for proper ROS Time objects
 from scipy.linalg import inv
@@ -83,34 +83,27 @@ class KittiOdom2Bag(Node):
         """
         super().__init__("KittiOdom2Bag")
 
-        # parameters
-        self.declare_parameters(
-            namespace='',
-            parameters=[
-                ('sequence', rclpy.Parameter.Type.INTEGER),
-                ('data_dir', rclpy.Parameter.Type.STRING),
-                ('odom', rclpy.Parameter.Type.BOOL),
-                ('odom_dir', rclpy.Parameter.Type.STRING),
-                ('bag_dir', rclpy.Parameter.Type.STRING),
-                ('raw_data.dir', rclpy.Parameter.Type.STRING),
-                ('raw_data.start_frame', rclpy.Parameter.Type.INTEGER),
-                ('raw_data.end_frame', rclpy.Parameter.Type.INTEGER),
-                ('raw_data.date', rclpy.Parameter.Type.STRING),
-                ('raw_data.drive', rclpy.Parameter.Type.STRING),
-            ]
-        )
+        # Simplified parameters
+        self.declare_parameter('data_dir', '')
+        self.declare_parameter('raw_dir', '')
+        self.declare_parameter('frame_id', 0)
+        self.declare_parameter('bag_dir', '')  # optional; default derived if empty
 
-        sequence = self.get_parameter('sequence').value
-        data_dir = self.get_parameter('data_dir').get_parameter_value().string_value
-        odom = self.get_parameter('odom').value
-        bag_dir = self.get_parameter('bag_dir').get_parameter_value().string_value
-        if odom == True:
-            odom_dir = self.get_parameter('odom_dir').get_parameter_value().string_value
-        else:
-            odom_dir = None
+        sequence = int(self.get_parameter('frame_id').value)
+        data_dir = str(self.get_parameter('data_dir').value)
+        raw_dir = str(self.get_parameter('raw_dir').value)
+        bag_dir = str(self.get_parameter('bag_dir').value)
 
+        if not data_dir:
+            self.get_logger().error('Parameter data_dir is required.')
+            rclpy.shutdown()
+            return
 
-        
+        # Always enable odom and use data_dir for odom path, as requested
+        odom = True
+        odom_dir = data_dir
+
+        # Setup dataset
         self.kitti_dataset = KITTIOdometryDataset(data_dir, sequence, odom_dir)
         self.bridge = CvBridge()
         self.counter = 0
@@ -121,23 +114,21 @@ class KittiOdom2Bag(Node):
         self.velodynes_file = self.kitti_dataset.velodyne_plc()
         self.times_file = self.kitti_dataset.times_file()
         self.odom = odom
-        # Access raw_data nested fields via flattened keys
-        raw_data_dir = self.get_parameter('raw_data.dir').value
+
+        # Derive raw mapping from sequence if raw_dir provided
         self.kitti_raw = None
-        if raw_data_dir:
+        if raw_dir:
             try:
-                start_frame = self.get_parameter('raw_data.start_frame').value
-                end_frame = self.get_parameter('raw_data.end_frame').value
-                if end_frame == -1:
-                    end_frame = len(self.times_file)
-                frames = list(range(start_frame, end_frame))
-
-                date = self.get_parameter('raw_data.date').value
-                drive = self.get_parameter('raw_data.drive').value
-
-                self.get_logger().info(f"Loading KITTI raw data: {date} {drive} from {raw_data_dir}, frames {start_frame} to {end_frame}")
-                self.kitti_raw = pykitti.raw(raw_data_dir, date, drive, frames=frames)
-
+                if sequence not in sequence_to_raw:
+                    self.get_logger().warn(f"No raw mapping found for sequence {sequence:02d}. Raw data (IMU/GPS) will be disabled.")
+                else:
+                    date = sequence_to_raw[sequence]['date']
+                    drive = sequence_to_raw[sequence]['drive']
+                    start_frame = sequence_to_raw[sequence]['start']
+                    end_frame = sequence_to_raw[sequence]['end']
+                    frames = list(range(start_frame, end_frame + 1))
+                    self.get_logger().info(f"Loading KITTI raw data: {date} {drive} from {raw_dir}, frames {start_frame} to {end_frame}")
+                    self.kitti_raw = pykitti.raw(raw_dir, date, drive, frames=frames)
             except Exception as e:
                 self.get_logger().error(f"Failed to load KITTI raw data: {e}")
                 self.get_logger().debug(traceback.format_exc())
@@ -154,6 +145,8 @@ class KittiOdom2Bag(Node):
 
         # rosbag writer
         self.writer = rosbag2_py.SequentialWriter()
+        if not bag_dir:
+            bag_dir = os.path.join(os.getcwd(), f'odom_bag_{sequence:02d}')
         if os.path.exists(bag_dir):
             self.get_logger().info(f'The directory {bag_dir} already exists. Shutting down...')
             rclpy.shutdown()
