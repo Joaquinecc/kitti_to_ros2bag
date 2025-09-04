@@ -91,3 +91,4 @@ devel/
 config/kitti_config.yaml
 
 note.txt
+*.sh

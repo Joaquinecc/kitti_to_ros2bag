@@ -11,7 +11,7 @@ A ROS 2 package that merges the KITTI raw and odometry datasets into a single RO
 - **Complete Sensor Data**: Velodyne point clouds, IMU data from raw datasets, and ground truth trajectories
 - **ROS2 Native**: Full ROS2 bag format with proper QoS settings
 - **TF Integration**: Automatic coordinate frame transforms between sensors
-- **Configurable**: Flexible YAML configuration for different sequences and parameters
+- **Simple setup**: Launch with arguments; no YAML config required
 
 ## Available Topics
 
@@ -123,45 +123,40 @@ unzip 2011_10_03_drive_0027_sync.zip
 | 09 | 2011_09_30_drive_0033 | 1591 | 2011_09_30_drive_0033_sync.zip |
 | 10 | 2011_09_30_drive_0034 | 1201 | 2011_09_30_drive_0034_sync.zip |
 
-### Configuration
+### Launch Arguments
 
-1. **Copy the sample configuration**:
-   ```bash
-   cd ~/ros2_ws/src/kitti_to_ros2bag
-   cp config/sample_kitti_config.yaml config/kitti_config.yaml
-   ```
-
-2. **Edit configuration for your setup**:
-   ```yaml
-   # config/kitti_config.yaml
-   KittiOdom2Bag:
-     ros__parameters:
-       sequence: 0                                    # KITTI sequence number (0-21)
-       data_dir: '/home/user/kitti_data/dataset/'     # Path to odometry dataset
-       odom_dir: '/home/user/kitti_data/dataset/'     # Same as data_dir for odometry
-       bag_dir: './kitti_sequence_00_bag'            # Output bag directory
-       odom: true                                     # Enable odometry mode
-       raw_data:
-         dir: '/home/user/kitti_raw_data/'           # Path to raw KITTI data
-         date: '2011_10_03'                          # Date of the raw dataset
-         drive: '0027'                               # Drive number
-         start_frame: 0                              # Starting frame
-         end_frame: 4540                             # Ending frame
-   ```
+- **data_dir** (required): Path to the KITTI odometry root containing `sequences/` and `poses/`.
+- **raw_dir** (optional): Path to the KITTI raw root (date folders). If provided, IMU/GPS will be included.
+- **frame_id** (required): KITTI sequence index. Raw IMU/GPS mapping is supported for sequences `00`–`10`.
+- **bag_dir** (optional): Output rosbag directory. Defaults to `./odom_bag_XX` where `XX` is the zero-padded `frame_id`.
 
 ### Running the Converter
 
+- Odometry only:
 ```bash
 cd ~/ros2_ws
 source install/setup.bash
-ros2 launch kitti_to_ros2bag kitti_odometry_bag.launch.py
+ros2 launch kitti_to_ros2bag kitti_odometry_bag.launch.py \
+  data_dir:=/absolute/path/to/kitti_odometry \
+  frame_id:=2
+```
+
+- Odometry + raw (IMU/GPS) with custom output path:
+```bash
+cd ~/ros2_ws
+source install/setup.bash
+ros2 launch kitti_to_ros2bag kitti_odometry_bag.launch.py \
+  data_dir:=/absolute/path/to/kitti_odometry \
+  raw_dir:=/absolute/path/to/kitti_raw \
+  frame_id:=2 \
+  bag_dir:=/absolute/path/to/output/my_bag
 ```
 
 ### Verification
 
 Check the generated bag file:
 ```bash
-ros2 bag info kitti_sequence_00_bag/
+ros2 bag info /absolute/path/to/output/my_bag
 ```
 
 ## Playing ROS2 Bags
@@ -169,32 +164,20 @@ ros2 bag info kitti_sequence_00_bag/
 To play the generated bags with proper QoS settings:
 
 ```bash
-ros2 bag play kitti_sequence_00_bag/ \
+ros2 bag play /absolute/path/to/output/my_bag \
   --qos-profile-overrides-path ~/ros2_ws/src/kitti_to_ros2bag/config/qos_override.yaml
 ```
-
-## Pre-generated Bags
-
-Download pre-created KITTI ROS2 bags from our [Google Drive](https://drive.google.com/drive/folders/1q0h48bIxIMOyi4xGNJ_aQyG0dm64Km00?usp=drive_link). These bags are ready to use with the provided QoS configuration.
 
 ## Configuration Parameters
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `sequence` | int | KITTI sequence number (0-21) | 0 |
-| `data_dir` | string | Path to KITTI odometry dataset | - |
-| `odom_dir` | string | Path to odometry ground truth | - |
-| `bag_dir` | string | Output bag directory | `./kitti_bag` |
-| `odom` | bool | Enable odometry mode | `true` |
-| `raw_data.dir` | string | Path to raw KITTI data | - |
-| `raw_data.date` | string | Date of raw dataset | - |
-| `raw_data.drive` | string | Drive number | - |
-| `raw_data.start_frame` | int | Starting frame | 0 |
-| `raw_data.end_frame` | int | Ending frame | -1 |
+| `data_dir` | string | Path to KITTI odometry dataset root (`sequences/` and `poses/`) | - (required) |
+| `raw_dir` | string | Path to KITTI raw root (date folders). Enables IMU/GPS if set | '' |
+| `frame_id` | int | KITTI sequence index (e.g., 0..10 supported for raw mapping) | 0 |
+| `bag_dir` | string | Output bag directory | `./odom_bag_XX` |
 
-## Example Subscriber Nodes
-
-### IMU Data Subscriber
+### Example Subscriber Nodes
 
 ```python
 #!/usr/bin/env python3
@@ -247,8 +230,6 @@ def main():
 if __name__ == '__main__':
     main()
 ```
-
-### Point Cloud Subscriber
 
 ```python
 #!/usr/bin/env python3
@@ -305,8 +286,6 @@ def main():
 if __name__ == '__main__':
     main()
 ```
-
-### Odometry Subscriber
 
 ```python
 #!/usr/bin/env python3
