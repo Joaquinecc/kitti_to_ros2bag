@@ -42,7 +42,8 @@ class KittiOdom2Bag(Node):
     ROS 2 node for converting KITTI odometry dataset to ROS 2 bag format.
     
     This class handles loading KITTI odometry data, processing sensor information
-    including LiDAR point clouds, IMU data, and ground truth odometry, then
+    including LiDAR point clouds, stereo images, camera calibration, and ground
+    truth odometry, and optionally IMU/GPS if KITTI raw data is provided; then
     writes all data to a ROS 2 bag file with proper timestamps and transforms.
     
     Attributes
@@ -296,11 +297,12 @@ class KittiOdom2Bag(Node):
         
     def publish_camera(self, timestamp_ns: int, counter: int) -> None:
         """
-        Publish left and right grayscale images and their camera calibration info.
+        Publish grayscale and color stereo images.
 
-        Reads stereo image pairs from the KITTI dataset, converts them to ROS
-        Image messages, and writes them to the bag file along with camera
-        calibration information derived from projection matrices.
+        Reads image pairs from the KITTI odometry dataset (left/right grayscale
+        and left/right color), converts them to ROS Image messages, and writes
+        them to the bag file. Camera calibration is published separately by
+        publish_camera_info().
 
         Parameters
         ----------
@@ -573,18 +575,18 @@ class KittiOdom2Bag(Node):
 
     def publish_camera_info(self, camera_id: int, topic: str, timestamp: int) -> None:
         """
-        Publish camera calibration information using projection matrix.
+        Publish camera calibration information using KITTI projection matrices.
 
         Creates and publishes CameraInfo messages containing camera calibration
-        data derived from KITTI's 3x4 projection matrices. The projection matrix
-        is flattened and stored in the message's P field.
+        data derived from KITTI's projection (P_rect_XX) and intrinsic (K_camN)
+        matrices for the specified camera.
 
         Parameters
         ----------
-        mtx : np.ndarray
-            3x4 projection matrix from KITTI calibration data.
+        camera_id : int
+            Camera index (0: gray left, 1: gray right, 2: color left, 3: color right).
         topic : str
-            ROS topic name for publishing CameraInfo messages.
+            ROS topic name for publishing the CameraInfo message.
         timestamp : int
             Timestamp in nanoseconds for the message.
 
@@ -594,12 +596,10 @@ class KittiOdom2Bag(Node):
         
         Examples
         --------
-        >>> import numpy as np
         >>> node = KittiOdom2Bag()
-        >>> proj_matrix = np.eye(3, 4)  # Example 3x4 projection matrix
-        >>> node.publish_camera_info(proj_matrix, '/camera_info', 1234567890)
+        >>> node.publish_camera_info(0, '/kitti/camera_gray_left/camera_info', 1234567890)
         """
-       
+        
         cam_id = f"00" if camera_id == 0 else f"10" if camera_id == 1 else f"20" if camera_id == 2 else f"30"
         P= getattr(self.kitti_odometry.calib, f'P_rect_{cam_id}')
         K= getattr(self.kitti_odometry.calib, f'K_cam{camera_id}')
