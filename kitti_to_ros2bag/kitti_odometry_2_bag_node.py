@@ -8,29 +8,30 @@ import os
 from typing import List, Optional, Union, Tuple
 from rclpy.node import Node
 from sensor_msgs.msg import PointCloud2, PointField, Imu, Image, CameraInfo, NavSatFix, NavSatStatus
-from std_msgs.msg import Header # We need Header for PointCloud2 message
-from cv_bridge import CvBridge
+from std_msgs.msg import Header
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import TransformStamped, PoseStamped
-from kitti_to_ros2bag.utils.kitti_utils import KITTIOdometryDataset
 from nav_msgs.msg import Odometry
 from cv_bridge import CvBridge
 from rclpy.serialization import serialize_message
-from tf2_ros import TransformBroadcaster # ADDED: Import TransformBroadcaster
-from tf2_msgs.msg import TFMessage # ADDED: Needed for /tf topic
-from kitti_to_ros2bag.utils.utils import quaternion_from_matrix, sequence_to_raw
-# ,quaternion_from_euler
+from tf2_msgs.msg import TFMessage
+from kitti_to_ros2bag.utils.utils import quaternion_from_matrix, sequence_to_raw,quaternion_from_euler
 from rclpy.time import Time as RospyTime # Import rclpy.time.Time for proper ROS Time objects
 from scipy.linalg import inv
-import traceback  # Optional, for detailed error logging
+import traceback
 import pykitti
-from tf_transformations import quaternion_from_euler
 
 VELO_TOPIC_NAME='/kitti/velo/pointcloud'
 IMU_TOPIC_NAME='/kitti/oxts/imu'
 ODOM_TOPIC_NAME='/kitti/gtruth/odom'
 PATH_TOPIC_NAME='/kitti/gtruth/path'
 GPS_TOPIC_NAME='/kitti/oxts/gps'
+CAM_0_TOPIC_NAME='/kitti/camera_gray_left/image'
+CAM_1_TOPIC_NAME='/kitti/camera_gray_right/image'
+CAM_0_INFO_TOPIC_NAME='/kitti/camera_gray_left/camera_info'
+CAM_1_INFO_TOPIC_NAME='/kitti/camera_gray_right/camera_info'
+TF_TOPIC_NAME='/tf'
+TF_STATIC_TOPIC_NAME='/tf_static'
 
 class KittiOdom2Bag(Node):
     """
@@ -84,64 +85,54 @@ class KittiOdom2Bag(Node):
         super().__init__("KittiOdom2Bag")
 
         # Simplified parameters
-        self.declare_parameter('data_dir', '')
+        self.declare_parameter('odometry_dir', '')
         self.declare_parameter('raw_dir', '')
-        self.declare_parameter('frame_id', 0)
-        self.declare_parameter('bag_dir', '')  # optional; default derived if empty
+        self.declare_parameter('sequence', '00')
+        self.declare_parameter('bag_dir', 'output_bag')  # optional; default derived if empty
 
-        sequence = int(self.get_parameter('frame_id').value)
-        data_dir = str(self.get_parameter('data_dir').value)
+        sequence = str(self.get_parameter('sequence').value)
+        odometry_dir = str(self.get_parameter('odometry_dir').value)
         raw_dir = str(self.get_parameter('raw_dir').value)
         bag_dir = str(self.get_parameter('bag_dir').value)
+        self.get_logger().info(f"Parameters loaded: sequence={sequence}, odometry_dir='{odometry_dir}', raw_dir='{raw_dir}', bag_dir='{bag_dir}''")
 
-        if not data_dir:
-            self.get_logger().error('Parameter data_dir is required.')
+        if not odometry_dir:
+            self.get_logger().error('Parameter odometry_dir is required.')
             rclpy.shutdown()
             return
 
-        # Always enable odom and use data_dir for odom path, as requested
-        odom = True
-        odom_dir = data_dir
+ 
 
         # Setup dataset
-        self.kitti_dataset = KITTIOdometryDataset(data_dir, sequence, odom_dir)
-        self.bridge = CvBridge()
+        self.kitti_odometry = pykitti.odometry(odometry_dir, sequence)
         self.counter = 0
-        self.counter_limit = len(self.kitti_dataset.left_images())
-        
-        self.left_imgs = self.kitti_dataset.left_images()
-        self.right_imgs = self.kitti_dataset.right_images()
-        self.velodynes_file = self.kitti_dataset.velodyne_plc()
-        self.times_file = self.kitti_dataset.times_file()
-        self.odom = odom
+        self.counter_limit = len(self.kitti_odometry)
+        self.times_file = self.kitti_odometry.timestamps
+
+        self.bridge = CvBridge()
+
+        self.get_logger().info(f"Total number of frames {self.counter_limit}")    
 
         # Derive raw mapping from sequence if raw_dir provided
-        self.kitti_raw = None
-        if raw_dir:
-            try:
-                if sequence not in sequence_to_raw:
-                    self.get_logger().warn(f"No raw mapping found for sequence {sequence:02d}. Raw data (IMU/GPS) will be disabled.")
-                else:
-                    date = sequence_to_raw[sequence]['date']
-                    drive = sequence_to_raw[sequence]['drive']
-                    start_frame = sequence_to_raw[sequence]['start']
-                    end_frame = sequence_to_raw[sequence]['end']
-                    frames = list(range(start_frame, end_frame + 1))
-                    self.get_logger().info(f"Loading KITTI raw data: {date} {drive} from {raw_dir}, frames {start_frame} to {end_frame}")
-                    self.kitti_raw = pykitti.raw(raw_dir, date, drive, frames=frames)
-            except Exception as e:
-                self.get_logger().error(f"Failed to load KITTI raw data: {e}")
-                self.get_logger().debug(traceback.format_exc())
-                rclpy.shutdown()
-                return
+        try:
+            if sequence not in sequence_to_raw:
+                self.get_logger().warn(f"No raw mapping found for sequence {sequence:02d}. Raw data (IMU/GPS) will be disabled.")
+            else:
+                date = sequence_to_raw[sequence]['date']
+                drive = sequence_to_raw[sequence]['drive']
+                start_frame = sequence_to_raw[sequence]['start']
+                end_frame = sequence_to_raw[sequence]['end']
+                frames = list(range(start_frame, end_frame + 1))
+                self.get_logger().info(f"Loading KITTI raw data: {date} {drive} from {raw_dir}, frames {start_frame} to {end_frame}")
+                self.kitti_raw = pykitti.raw(raw_dir, date, drive, frames=frames)
+        except Exception as e:
+            self.get_logger().error(f"Failed to load KITTI raw data: {e}")
+            self.get_logger().debug(traceback.format_exc())
+            rclpy.shutdown()
+            return
             
-        if odom == True:
-            try:
-                self.ground_truth = self.kitti_dataset.odom_pose()
-            except FileNotFoundError as filenotfounderror:
-                self.get_logger().error("Error: {}".format(filenotfounderror))
-                rclpy.shutdown()
-                return
+
+
 
         # rosbag writer
         self.writer = rosbag2_py.SequentialWriter()
@@ -160,9 +151,10 @@ class KittiOdom2Bag(Node):
         self.p_msg.header.frame_id = "odom" # Initialize path header frame_id
 
         self.create_topics() # Create topics for the bag file
-
         self.publish_tf_static()    
-   
+        #publish camera info
+        self.publish_camera_info(camera_id=0, topic='/kitti/camera_gray_left/camera_info' , timestamp=0)
+        self.publish_camera_info(camera_id=1, topic='/kitti/camera_gray_right/camera_info', timestamp=0)
 
     def create_topics(self) -> None:
         """
@@ -181,31 +173,36 @@ class KittiOdom2Bag(Node):
         -------
         None
         """
-        # left_img_topic_info = rosbag2_py._storage.TopicMetadata(id=510,name='/kitti/camera_gray_left/image', type='sensor_msgs/msg/Image', serialization_format='cdr')
-        # right_img_topic_info = rosbag2_py._storage.TopicMetadata(id=511,name='/kitti/camera_gray_right/image', type='sensor_msgs/msg/Image', serialization_format='cdr')
-        # left_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=514,name='/kitti/camera_gray_left/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr')
-        # right_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=515,name='/kitti/camera_gray_right/camera_info', type='sensor_msgs/msg/CameraInfo', serialization_format='cdr')
-
+        #QoS for static topics
         qos_tf_static = rosbag2_py._storage.QoS(1).keep_last(1).reliable().transient_local()
+
+        #Camera 0
+        left_img_topic_info = rosbag2_py._storage.TopicMetadata(id=510,name=CAM_0_TOPIC_NAME, type='sensor_msgs/msg/Image', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+        left_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=514,name=CAM_0_INFO_TOPIC_NAME, type='sensor_msgs/msg/CameraInfo', 
+        serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+
+        #Camera 1
+        right_img_topic_info = rosbag2_py._storage.TopicMetadata(id=511,name=CAM_1_TOPIC_NAME, type='sensor_msgs/msg/Image', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+        right_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=515,name=CAM_1_INFO_TOPIC_NAME, 
+        type='sensor_msgs/msg/CameraInfo', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
         
         odom_topic_info = rosbag2_py._storage.TopicMetadata(id=512,name=ODOM_TOPIC_NAME, type='nav_msgs/msg/Odometry', serialization_format='cdr')
         path_topic_info = rosbag2_py._storage.TopicMetadata(id=513,name=PATH_TOPIC_NAME, type='nav_msgs/msg/Path', serialization_format='cdr')
         velodyne_topic_info = rosbag2_py._storage.TopicMetadata(id=516,name=VELO_TOPIC_NAME, type='sensor_msgs/msg/PointCloud2', serialization_format='cdr')
         imu_topic= rosbag2_py._storage.TopicMetadata(id=519,name=IMU_TOPIC_NAME,type='sensor_msgs/msg/Imu',serialization_format='cdr',)
         gps_topic_info = rosbag2_py._storage.TopicMetadata(id=520,name=GPS_TOPIC_NAME,type='sensor_msgs/msg/NavSatFix',serialization_format='cdr',)
-
-        tf_static_topic_info = rosbag2_py._storage.TopicMetadata(id=518,name='/tf_static', type='tf2_msgs/msg/TFMessage', 
+        tf_topic_info = rosbag2_py._storage.TopicMetadata(id=517,name=TF_TOPIC_NAME, type='tf2_msgs/msg/TFMessage', serialization_format='cdr',)
+        tf_static_topic_info = rosbag2_py._storage.TopicMetadata(id=518,name=TF_STATIC_TOPIC_NAME, type='tf2_msgs/msg/TFMessage', 
         serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
-        tf_topic_info = rosbag2_py._storage.TopicMetadata(id=517,name='/tf', type='tf2_msgs/msg/TFMessage', serialization_format='cdr',)
 
 
 
 
-        # self.writer.create_topic(left_img_topic_info)
-        # self.writer.create_topic(right_img_topic_info)
-        # self.writer.create_topic(left_cam_topic_info)
-        # self.writer.create_topic(right_cam_topic_info)
 
+        self.writer.create_topic(left_img_topic_info)
+        self.writer.create_topic(right_img_topic_info)
+        self.writer.create_topic(left_cam_topic_info)
+        self.writer.create_topic(right_cam_topic_info)
         self.writer.create_topic(odom_topic_info)
         self.writer.create_topic(path_topic_info)
         self.writer.create_topic(velodyne_topic_info)
@@ -215,7 +212,6 @@ class KittiOdom2Bag(Node):
             self.writer.create_topic(imu_topic)
             self.writer.create_topic(gps_topic_info)
 
-        
         
     def process_all_frames(self) -> None:
         """
@@ -249,22 +245,25 @@ class KittiOdom2Bag(Node):
         """
 
         for counter in range(self.counter_limit):
-            time = self.times_file[counter]
-            timestamp_ns = int(time * 1e9) # nanoseconds
-            
-            # self.publish_camera(timestamp_ns, counter)
+            time = self.kitti_odometry.timestamps[counter]
+            timestamp_ns = int(time.total_seconds() * 1e9)
 
-            if self.odom == True:
-                translation = self.ground_truth[counter][:3,3]
-                quaternion = quaternion_from_matrix(self.ground_truth[counter])
-                self.publish_odom(translation, quaternion, timestamp_ns)
-                self.publish_dynamic_tf(translation, quaternion, timestamp_ns)
-            if self.kitti_raw is not None:
-                self.publish_imu_data(IMU_TOPIC_NAME,timestamp_ns,counter)
-                self.publish_gps_data(GPS_TOPIC_NAME, timestamp_ns, counter)
+            #Odometry
+            translation = self.kitti_odometry.poses[counter][:3,3]
+            quaternion = quaternion_from_matrix(self.kitti_odometry.poses[counter])
+            self.publish_odom(translation, quaternion, timestamp_ns)
+            self.publish_dynamic_tf(translation, quaternion, timestamp_ns)
+
+
+            self.publish_imu_data(IMU_TOPIC_NAME,timestamp_ns,counter)
+            self.publish_gps_data(GPS_TOPIC_NAME, timestamp_ns, counter)
             
-            #point cloud
+            # #point cloud
             self.publish_velo(VELO_TOPIC_NAME,timestamp_ns,counter)
+
+            # #Camera
+            self.publish_camera(timestamp_ns, counter)
+
             self.get_logger().info(f'{counter}-Frames Processed')
 
         self.get_logger().info('All Frames processed. Stopping...')
@@ -296,19 +295,18 @@ class KittiOdom2Bag(Node):
         >>> node = KittiOdom2Bag()
         >>> node.publish_camera(1234567890, 42)  # Publish frame 42 at given timestamp
         """
-        # retrieving images and writing to bag
-        left_image = cv2.imread(self.left_imgs[counter])
-        right_image = cv2.imread(self.right_imgs[counter])
+        #Cam 0
+        left_image = cv2.imread(self.kitti_odometry.cam0_files[counter])
         left_img_msg = self.bridge.cv2_to_imgmsg(left_image, encoding='passthrough')
-        self.writer.write('/kitti/camera_gray_left/image', serialize_message(left_img_msg), timestamp_ns)
+        #Cam 1
+        right_image = cv2.imread(self.kitti_odometry.cam1_files[counter])
         right_img_msg = self.bridge.cv2_to_imgmsg(right_image, encoding='passthrough')
-        self.writer.write('/kitti/camera_gray_right/image', serialize_message(right_img_msg), timestamp_ns)
 
-        # retrieving project mtx and writing to bag
-        p_mtx2 = self.kitti_dataset.projection_matrix(1)
-        self.publish_camera_info(p_mtx2, '/kitti/camera_gray_left/camera_info', timestamp_ns)
-        p_mtx3 = self.kitti_dataset.projection_matrix(2)
-        self.publish_camera_info(p_mtx3, '/kitti/camera_gray_right/camera_info', timestamp_ns)
+
+
+        self.writer.write(CAM_0_TOPIC_NAME, serialize_message(left_img_msg), timestamp_ns)
+        self.writer.write(CAM_1_TOPIC_NAME, serialize_message(right_img_msg), timestamp_ns)
+
 
     def publish_tf_static(self) -> None:
         """
@@ -335,7 +333,7 @@ class KittiOdom2Bag(Node):
         """
         # self.get_logger().error(f"publish_tf_static {self.kitti_raw.calib}")
 
-        first_timestamp_ns = int(self.times_file[0] * 1e9)
+        first_timestamp_ns = int(self.kitti_odometry.timestamps[0].total_seconds() * 1e9)
         current_ros_time = RospyTime(nanoseconds=first_timestamp_ns)
         theta = np.deg2rad(90)  # Convert degrees to radians
         #Rotato 90 on the X axis, this just for vizualization purpose, since kitti use different reference axis
@@ -349,18 +347,15 @@ class KittiOdom2Bag(Node):
         transforms = [
             ('map', 'odom', tf_global),
             ('base_link', 'camera_gray_left', np.eye(4)), #We took the Camera 0 as base_link
-            ('base_link', 'velo_link',self.kitti_dataset.calib.T_cam0_velo),  # Invert the transformation for the static TF
-            # ('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu),   
-            # ('camera_gray_left', 'camera_gray_right', self.kitti_dataset.calib.T_cam1_velo),
-            # ('camera_gray_left', 'camera_gray_left', self.kitti_dataset.calib.T_cam0_imu),
-            # ('camera_gray_left', 'camera_gray_right', self.kitti_dataset.calib.T_cam1_imu),
+            ('base_link', 'velo_link',self.kitti_odometry.calib.T_cam0_velo),  # Invert the transformation for the static TF
+            ('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu),   
+            ( 'camera_gray_right','velo_link', self.kitti_raw.calib.T_cam1_velo),
+            # ('camera_gray_left', 'camera_gray_left', self.kitti_odometry.calib.T_cam0_imu),
+            # ('camera_gray_left', 'camera_gray_right', self.kitti_odometry.calib.T_cam1_imu),
         ]
      
-        # Only add these transforms if kitti_raw exists and has calib
-        if hasattr(self, 'kitti_raw') and hasattr(self.kitti_raw, 'calib'):
-            transforms.append(('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu))
+  
         tfm_static = TFMessage()
-
         for parent_frame, child_frame, transform in transforms:
             t = transform[0:3, 3]
             q = quaternion_from_matrix(transform)
@@ -382,7 +377,7 @@ class KittiOdom2Bag(Node):
             # self.tf_broadcaster.sendTransform(tf_msg)
             tfm_static.transforms.append(tf_msg)
             
-        self.writer.write('/tf_static', serialize_message(tfm_static),  current_ros_time.nanoseconds)
+        self.writer.write(TF_STATIC_TOPIC_NAME, serialize_message(tfm_static),  current_ros_time.nanoseconds)
 
     def publish_imu_data(self, topic: str, timestamp_ns: int, counter: int) -> None:
         """
@@ -509,7 +504,7 @@ class KittiOdom2Bag(Node):
         >>> node = KittiOdom2Bag()
         >>> node.publish_velo('/kitti/velo/pointcloud', 1234567890, 42)
         """
-        velo_filename=self.velodynes_file[counter]
+        velo_filename=self.kitti_odometry.velo_files[counter]
         frame_id="velo_link"
         try:
             points = np.fromfile(velo_filename, dtype=np.float32).reshape(-1, 4)
@@ -545,7 +540,7 @@ class KittiOdom2Bag(Node):
         self.writer.write(topic, serialize_message(msg), timestamp_ns)
         self.get_logger().debug(f"Wrote Velodyne point cloud for frame {counter}")
 
-    def publish_camera_info(self, mtx: np.ndarray, topic: str, timestamp: int) -> None:
+    def publish_camera_info(self, camera_id: int, topic: str, timestamp: int) -> None:
         """
         Publish camera calibration information using projection matrix.
 
@@ -573,8 +568,15 @@ class KittiOdom2Bag(Node):
         >>> proj_matrix = np.eye(3, 4)  # Example 3x4 projection matrix
         >>> node.publish_camera_info(proj_matrix, '/camera_info', 1234567890)
         """
+       
+        cam_id = f"00" if camera_id == 0 else f"10" if camera_id == 1 else f"20" if camera_id == 2 else f"30"
+        R = getattr(self.kitti_raw.calib, f"R_rect_{cam_id}")[:3,:3]
+        P= getattr(self.kitti_raw.calib, f"P_rect_{cam_id}")
+        K= P[:3, :3]@inv(R)
         camera_info_msg_2 = CameraInfo()
-        camera_info_msg_2.p = mtx.flatten()
+        camera_info_msg_2.p = P.flatten() #Projection matrix
+        camera_info_msg_2.k = K.flatten() #Intrinsic matrix
+        # camera_info_msg_2.k = mtx[:3, :3] #Intrinsic matrix
         self.writer.write(topic, serialize_message(camera_info_msg_2), timestamp)   
         return
         
@@ -623,8 +625,7 @@ class KittiOdom2Bag(Node):
 
         tf_oxts_msg = TFMessage()
         tf_oxts_msg.transforms.append(t_dynamic)
-        self.writer.write('/tf', serialize_message(tf_oxts_msg), timestamp_ns)
-
+        self.writer.write(TF_TOPIC_NAME, serialize_message(tf_oxts_msg), timestamp_ns)
 
     def publish_odom(self, translation: np.ndarray, quaternion: np.ndarray, timestamp_ns: int) -> None:
         """
