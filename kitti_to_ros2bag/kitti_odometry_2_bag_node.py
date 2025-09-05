@@ -118,10 +118,9 @@ class KittiOdom2Bag(Node):
         self.get_logger().info(f"Total number of frames {self.counter_limit}")    
 
         # Derive raw mapping from sequence if raw_dir provided
-        try:
-            if sequence not in sequence_to_raw:
-                self.get_logger().warn(f"No raw mapping found for sequence {sequence:02d}. Raw data (IMU/GPS) will be disabled.")
-            else:
+        self.kitti_raw = None
+        if raw_dir and sequence in sequence_to_raw:
+            try:
                 date = sequence_to_raw[sequence]['date']
                 drive = sequence_to_raw[sequence]['drive']
                 start_frame = sequence_to_raw[sequence]['start']
@@ -129,13 +128,15 @@ class KittiOdom2Bag(Node):
                 frames = list(range(start_frame, end_frame + 1))
                 self.get_logger().info(f"Loading KITTI raw data: {date} {drive} from {raw_dir}, frames {start_frame} to {end_frame}")
                 self.kitti_raw = pykitti.raw(raw_dir, date, drive, frames=frames)
-        except Exception as e:
-            self.get_logger().error(f"Failed to load KITTI raw data: {e}")
-            self.get_logger().debug(traceback.format_exc())
-            rclpy.shutdown()
-            return
+            except Exception as e:
+                self.get_logger().warn(f"Failed to load KITTI raw data: {e}. IMU/GPS will be disabled.")
+                self.get_logger().debug(traceback.format_exc())
+        else:
+            if not raw_dir:
+                self.get_logger().info("No raw_dir provided. IMU/GPS will be disabled.")
+            elif sequence not in sequence_to_raw:
+                self.get_logger().warn(f"No raw mapping found for sequence {sequence:02d}. IMU/GPS will be disabled.")
             
-
 
 
         # rosbag writer
@@ -274,9 +275,11 @@ class KittiOdom2Bag(Node):
             self.publish_odom(translation, quaternion, timestamp_ns)
             self.publish_dynamic_tf(translation, quaternion, timestamp_ns)
 
+            if self.kitti_raw is not None:
+                self.publish_imu_data(IMU_TOPIC_NAME,timestamp_ns,counter)
+                self.publish_gps_data(GPS_TOPIC_NAME, timestamp_ns, counter)
 
-            self.publish_imu_data(IMU_TOPIC_NAME,timestamp_ns,counter)
-            self.publish_gps_data(GPS_TOPIC_NAME, timestamp_ns, counter)
+            
             
             # #point cloud
             self.publish_velo(VELO_TOPIC_NAME,timestamp_ns,counter)
@@ -359,7 +362,7 @@ class KittiOdom2Bag(Node):
         -------
         None
         """
-        # self.get_logger().error(f"publish_tf_static {self.kitti_raw.calib}")
+
 
         first_timestamp_ns = int(self.kitti_odometry.timestamps[0].total_seconds() * 1e9)
         current_ros_time = RospyTime(nanoseconds=first_timestamp_ns)
@@ -376,12 +379,12 @@ class KittiOdom2Bag(Node):
             ('map', 'odom', tf_global),
             ('base_link', 'camera_gray_left', np.eye(4)), #We took the Camera 0 as base_link
             ('base_link', 'velo_link',self.kitti_odometry.calib.T_cam0_velo),  # Invert the transformation for the static TF
-            ('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu),   
             ( 'camera_gray_right','velo_link', self.kitti_odometry.calib.T_cam1_velo),
             ('camera_color_left', 'velo_link', self.kitti_odometry.calib.T_cam2_velo),
             ('camera_color_right', 'velo_link', self.kitti_odometry.calib.T_cam3_velo),
         ]
-     
+        if self.kitti_raw is not None:
+            transforms.append(('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu))
   
         tfm_static = TFMessage()
         for parent_frame, child_frame, transform in transforms:
