@@ -30,6 +30,10 @@ CAM_0_TOPIC_NAME='/kitti/camera_gray_left/image'
 CAM_1_TOPIC_NAME='/kitti/camera_gray_right/image'
 CAM_0_INFO_TOPIC_NAME='/kitti/camera_gray_left/camera_info'
 CAM_1_INFO_TOPIC_NAME='/kitti/camera_gray_right/camera_info'
+CAM_2_TOPIC_NAME='/kitti/camera_color_left/image'
+CAM_3_TOPIC_NAME='/kitti/camera_color_right/image'
+CAM_2_INFO_TOPIC_NAME='/kitti/camera_color_left/camera_info'
+CAM_3_INFO_TOPIC_NAME='/kitti/camera_color_right/camera_info'
 TF_TOPIC_NAME='/tf'
 TF_STATIC_TOPIC_NAME='/tf_static'
 
@@ -153,8 +157,10 @@ class KittiOdom2Bag(Node):
         self.create_topics() # Create topics for the bag file
         self.publish_tf_static()    
         #publish camera info
-        self.publish_camera_info(camera_id=0, topic='/kitti/camera_gray_left/camera_info' , timestamp=0)
-        self.publish_camera_info(camera_id=1, topic='/kitti/camera_gray_right/camera_info', timestamp=0)
+        self.publish_camera_info(camera_id=0, topic=CAM_0_INFO_TOPIC_NAME , timestamp=0)
+        self.publish_camera_info(camera_id=1, topic=CAM_1_INFO_TOPIC_NAME, timestamp=0)
+        self.publish_camera_info(camera_id=2, topic=CAM_2_INFO_TOPIC_NAME, timestamp=0)
+        self.publish_camera_info(camera_id=3, topic=CAM_3_INFO_TOPIC_NAME, timestamp=0)
 
     def create_topics(self) -> None:
         """
@@ -185,6 +191,16 @@ class KittiOdom2Bag(Node):
         right_img_topic_info = rosbag2_py._storage.TopicMetadata(id=511,name=CAM_1_TOPIC_NAME, type='sensor_msgs/msg/Image', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
         right_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=515,name=CAM_1_INFO_TOPIC_NAME, 
         type='sensor_msgs/msg/CameraInfo', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+
+        #Camera 2 (color left)
+        color_left_img_topic_info = rosbag2_py._storage.TopicMetadata(id=521,name=CAM_2_TOPIC_NAME, type='sensor_msgs/msg/Image', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+        color_left_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=523,name=CAM_2_INFO_TOPIC_NAME, type='sensor_msgs/msg/CameraInfo', 
+        serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+
+        #Camera 3 (color right)
+        color_right_img_topic_info = rosbag2_py._storage.TopicMetadata(id=522,name=CAM_3_TOPIC_NAME, type='sensor_msgs/msg/Image', serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
+        color_right_cam_topic_info = rosbag2_py._storage.TopicMetadata(id=524,name=CAM_3_INFO_TOPIC_NAME, type='sensor_msgs/msg/CameraInfo', 
+        serialization_format='cdr',offered_qos_profiles=[qos_tf_static])
         
         odom_topic_info = rosbag2_py._storage.TopicMetadata(id=512,name=ODOM_TOPIC_NAME, type='nav_msgs/msg/Odometry', serialization_format='cdr')
         path_topic_info = rosbag2_py._storage.TopicMetadata(id=513,name=PATH_TOPIC_NAME, type='nav_msgs/msg/Path', serialization_format='cdr')
@@ -201,8 +217,12 @@ class KittiOdom2Bag(Node):
 
         self.writer.create_topic(left_img_topic_info)
         self.writer.create_topic(right_img_topic_info)
+        self.writer.create_topic(color_left_img_topic_info)
+        self.writer.create_topic(color_right_img_topic_info)
         self.writer.create_topic(left_cam_topic_info)
         self.writer.create_topic(right_cam_topic_info)
+        self.writer.create_topic(color_left_cam_topic_info)
+        self.writer.create_topic(color_right_cam_topic_info)
         self.writer.create_topic(odom_topic_info)
         self.writer.create_topic(path_topic_info)
         self.writer.create_topic(velodyne_topic_info)
@@ -301,11 +321,19 @@ class KittiOdom2Bag(Node):
         #Cam 1
         right_image = cv2.imread(self.kitti_odometry.cam1_files[counter])
         right_img_msg = self.bridge.cv2_to_imgmsg(right_image, encoding='passthrough')
+        #Cam 2 (color left)
+        color_left_image = cv2.imread(self.kitti_odometry.cam2_files[counter])
+        color_left_img_msg = self.bridge.cv2_to_imgmsg(color_left_image, encoding='passthrough')
+        #Cam 3 (color right)
+        color_right_image = cv2.imread(self.kitti_odometry.cam3_files[counter])
+        color_right_img_msg = self.bridge.cv2_to_imgmsg(color_right_image, encoding='passthrough')
 
 
 
         self.writer.write(CAM_0_TOPIC_NAME, serialize_message(left_img_msg), timestamp_ns)
         self.writer.write(CAM_1_TOPIC_NAME, serialize_message(right_img_msg), timestamp_ns)
+        self.writer.write(CAM_2_TOPIC_NAME, serialize_message(color_left_img_msg), timestamp_ns)
+        self.writer.write(CAM_3_TOPIC_NAME, serialize_message(color_right_img_msg), timestamp_ns)
 
 
     def publish_tf_static(self) -> None:
@@ -349,9 +377,9 @@ class KittiOdom2Bag(Node):
             ('base_link', 'camera_gray_left', np.eye(4)), #We took the Camera 0 as base_link
             ('base_link', 'velo_link',self.kitti_odometry.calib.T_cam0_velo),  # Invert the transformation for the static TF
             ('base_link', 'imu_link', self.kitti_raw.calib.T_cam0_imu),   
-            ( 'camera_gray_right','velo_link', self.kitti_raw.calib.T_cam1_velo),
-            # ('camera_gray_left', 'camera_gray_left', self.kitti_odometry.calib.T_cam0_imu),
-            # ('camera_gray_left', 'camera_gray_right', self.kitti_odometry.calib.T_cam1_imu),
+            ( 'camera_gray_right','velo_link', self.kitti_odometry.calib.T_cam1_velo),
+            ('camera_color_left', 'velo_link', self.kitti_odometry.calib.T_cam2_velo),
+            ('camera_color_right', 'velo_link', self.kitti_odometry.calib.T_cam3_velo),
         ]
      
   
@@ -570,9 +598,8 @@ class KittiOdom2Bag(Node):
         """
        
         cam_id = f"00" if camera_id == 0 else f"10" if camera_id == 1 else f"20" if camera_id == 2 else f"30"
-        R = getattr(self.kitti_raw.calib, f"R_rect_{cam_id}")[:3,:3]
-        P= getattr(self.kitti_raw.calib, f"P_rect_{cam_id}")
-        K= P[:3, :3]@inv(R)
+        P= getattr(self.kitti_odometry.calib, f'P_rect_{cam_id}')
+        K= getattr(self.kitti_odometry.calib, f'K_cam{camera_id}')
         camera_info_msg_2 = CameraInfo()
         camera_info_msg_2.p = P.flatten() #Projection matrix
         camera_info_msg_2.k = K.flatten() #Intrinsic matrix
